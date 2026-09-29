@@ -20,6 +20,7 @@ const COLS = [
   { key: 'forks', label: 'Forks' },
   { key: 'contributors_count', label: 'Devs' },
   { key: 'health_score', label: 'Health' },
+  { key: 'prediction_trend', label: 'Trend' },
   { key: 'status', label: 'Status' },
   { key: 'analyzed_at', label: 'Analyzed At' },
   { key: 'actions', label: 'Actions' }
@@ -145,15 +146,16 @@ export default function History() {
   const paged = processed.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const exportCSV = () => {
-    const header = ['ID', 'Repo Name', 'Repo URL', 'Stars', 'Forks', 'Contributors', 'Health Score', 'Status', 'Analyzed At'].join(',');
+    const header = ['ID', 'Repo Name', 'Repo URL', 'Stars', 'Forks', 'Contributors', 'Health Score', 'Prediction Trend', 'Status', 'Analyzed At'].join(',');
     const lines = processed.map(r => [
       r.id,
       `"${r.name}"`,
       r.repo_url,
       r.stars ?? 0,
       r.forks ?? 0,
-      r.contributors_count,
-      r.health_score,
+      r.contributors_count ?? r.contributor_count ?? 0,
+      r.health_score ?? 0,
+      r.prediction_trend || r.trend || 'Stable',
       r.status,
       r.analyzed_at
     ].join(','));
@@ -174,8 +176,14 @@ export default function History() {
       
       <div className="flex-1 p-6 space-y-6">
         {error && (
-          <div className="border-3 border-black bg-rose-200 text-black font-bold text-sm px-4 py-3 shadow-[3px_3px_0_0_rgba(0,0,0,1)]">
-            ⚠ {error}
+          <div className="border-3 border-black bg-rose-200 text-black font-bold text-sm px-4 py-3 shadow-[3px_3px_0_0_rgba(0,0,0,1)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <span>⚠ {error}</span>
+            <button
+              onClick={load}
+              className="px-3 py-1 border-2 border-black bg-white hover:bg-slate-100 text-xs font-black uppercase shadow-[2px_2px_0_0_rgba(0,0,0,1)] transition-all"
+            >
+              Retry
+            </button>
           </div>
         )}
 
@@ -352,6 +360,15 @@ export default function History() {
                         {row.health_score}%
                       </td>
 
+                      {/* Prediction Trend */}
+                      <td className="p-3 font-mono text-xs font-bold text-center border-r-3 border-black">
+                        <span className={`border border-black px-2 py-0.5 text-[9px] font-black uppercase shadow-[1px_1px_0_0_rgba(0,0,0,1)] ${
+                          (row.prediction_trend || row.trend) === 'Improving' ? 'bg-emerald-300 text-black' : ((row.prediction_trend || row.trend) === 'Declining' ? 'bg-rose-300 text-black' : 'bg-slate-200 text-slate-800')
+                        }`}>
+                          {row.prediction_trend || row.trend || 'Stable'}
+                        </span>
+                      </td>
+
                       {/* Status */}
                       <td className="p-3 border-r-3 border-black">
                         <span className={`border border-black px-2 py-0.5 text-[9px] font-black uppercase shadow-[1px_1px_0_0_rgba(0,0,0,1)] ${
@@ -363,7 +380,7 @@ export default function History() {
 
                       {/* Analyzed Date */}
                       <td className="p-3 text-xs text-slate-500 font-mono border-r-3 border-black">
-                        {new Date(row.analyzed_at).toLocaleString()}
+                        {row.analyzed_at ? new Date(row.analyzed_at).toLocaleString() : 'N/A'}
                       </td>
 
                       {/* Actions */}

@@ -18,10 +18,10 @@ def run_drift_analysis():
     records = db.query(ContributorAnalysis).all()
     db.close()
     
-    if len(records) < 10:
+    if len(records) < 10 or int(len(records) * 0.70) < 5 or (len(records) - int(len(records) * 0.70)) < 3:
         return {
             "status": "Insufficient data",
-            "message": f"Need at least 10 contributor analyses to compare features. Currently have {len(records)}."
+            "message": f"Insufficient historical data for drift detection. At least 10 contributor analyses across multiple snapshots are required (currently {len(records)})."
         }
         
     # Sort chronologically to split reference (older) and current (newer)

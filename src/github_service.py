@@ -1,3 +1,4 @@
+import os
 import requests
 import datetime
 import re
@@ -24,8 +25,8 @@ def parse_repo_url(url):
     if not url:
         raise ValueError("Repository URL is empty.")
     
-    # Clean up the URL: strip spaces, trailing slashes, remove .git suffix
-    clean_url = url.strip().rstrip("/").replace(".git", "")
+    # Clean up the URL: strip spaces, trailing slashes, remove .git suffix, strip query params
+    clean_url = url.strip().split("?")[0].rstrip("/").replace(".git", "")
     
     # Match standard GitHub formats:
     # 1. https://github.com/owner/repo or http://github.com/...
@@ -48,8 +49,13 @@ def get_auth_headers(token=None):
         "User-Agent": "Engineering-Analytics-Platform-MLOps",
         "Accept": "application/vnd.github.v3+json"
     }
-    if token and token.strip() and token != "undefined":
-        headers["Authorization"] = f"token {token.strip()}"
+    effective_token = token or os.getenv("GITHUB_TOKEN")
+    if effective_token and str(effective_token).strip() and str(effective_token).strip() != "undefined":
+        tk = str(effective_token).strip()
+        if not tk.startswith("token ") and not tk.startswith("Bearer "):
+            headers["Authorization"] = f"token {tk}"
+        else:
+            headers["Authorization"] = tk
     return headers
 
 def parse_link_header_count(link_header):
@@ -73,7 +79,9 @@ def get_repo_metrics(owner, repo, token=None):
     
     response = requests.get(repo_url, headers=headers, timeout=10)
     if response.status_code == 403 or response.status_code == 429:
-        raise Exception("GitHub API rate limit exceeded. Please configure a Personal Access Token in Settings.")
+        raise Exception("GitHub API rate limit exceeded. Please configure GITHUB_TOKEN in environment variables or Settings.")
+    elif response.status_code == 404:
+        raise Exception(f"Repository '{owner}/{repo}' not found on GitHub. Verify the URL and check if the repository is public.")
     elif response.status_code != 200:
         raise Exception(f"Failed to fetch repository metadata: {response.json().get('message', 'Unknown error')}")
         
@@ -164,9 +172,11 @@ def get_contributors(owner, repo, token=None):
     
     response = requests.get(contrib_url, headers=headers, timeout=10)
     if response.status_code == 403 or response.status_code == 429:
-        raise Exception("GitHub API rate limit exceeded. Please configure a Personal Access Token in Settings.")
-    elif response.status_code != 200:
-        raise Exception(f"Failed to fetch contributors: {response.json().get('message', 'Unknown error')}")
+        raise Exception("GitHub API rate limit exceeded. Please configure GITHUB_TOKEN in environment variables or Settings.")
+    elif response.status_code == 404:
+        raise Exception(f"Repository '{owner}/{repo}' not found on GitHub. Verify the repository name or access permissions.")
+    elif response.status_code == 204 or response.status_code != 200:
+        return []
         
     contribs = response.json()
     if not isinstance(contribs, list):
@@ -264,7 +274,13 @@ def get_contributors(owner, repo, token=None):
     return list(metrics.values())
 
 def calculate_employee_score(profile: dict) -> int:
-    """Calculate contribution score based on configurable weights and limits."""
+    """Calculate transparent engineering activity score based on configurable weights and limits.
+    
+    IMPORTANT NOTICE:
+    This score measures observable repository activity (commits 30%, PRs 25%, issues 15%,
+    reviews 15%, consistency 15%) and must NOT be interpreted as an objective or comprehensive
+    measure of an employee's overall ability or performance.
+    """
     commits = profile.get("commits", 0)
     prs = profile.get("pull_requests", 0) or profile.get("prs", 0) or profile.get("merged_prs", 0)
     issues = profile.get("issues_closed", 0)
@@ -302,9 +318,9 @@ def get_repository_health(owner, repo, repo_metrics=None, contributors=None, tok
     """Calculate repository health score using 6 key criteria:
     Commit Activity, PR Activity, Issue Resolution Rate, Contributor Participation, Repository Maintenance, Review Participation
     """
-    if not repo_metrics:
+    if repo_metrics is None:
         repo_metrics = get_repo_metrics(owner, repo, token)
-    if not contributors:
+    if contributors is None:
         contributors = get_contributors(owner, repo, token)
         
     open_issues = repo_metrics.get("open_issues", 0)

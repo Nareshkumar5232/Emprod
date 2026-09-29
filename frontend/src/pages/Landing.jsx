@@ -104,9 +104,12 @@ export default function Landing() {
               Analyze Repository <ArrowRight className="ml-2 inline" size={20} />
             </Link>
             <Link to="/dashboard" className="neo-btn bg-white text-black text-base py-3 px-6 shadow-[5px_5px_0_0_rgba(0,0,0,1)]">
-              View Demo Dashboard
+              Open Dashboard
             </Link>
           </div>
+          <p className="text-[11px] font-bold text-slate-500 italic mt-3">
+            * Note: Contribution scores measure observable repository activity (commits, PRs, issues, reviews, consistency) and do not represent a complete measure of an employee's overall ability.
+          </p>
         </div>
         
         <div className="flex-1 w-full flex items-center justify-center">

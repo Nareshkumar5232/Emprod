@@ -68,8 +68,14 @@ export default function Dashboard() {
     } else if (repoParam) {
       loadAnalysis(decodeURIComponent(repoParam));
     } else {
-      // Auto load first repo demo on fresh mount (React demo)
-      loadAnalysis(null, 1);
+      // Check if there is any real recent analysis in the DB to display
+      api.getRecent().then(res => {
+        if (Array.isArray(res.data) && res.data.length > 0 && res.data[0].id) {
+          loadAnalysis(null, res.data[0].id);
+        }
+      }).catch(() => {
+        // No analyses in DB yet; keep data null for clean empty state
+      });
     }
   }, [repoParam, analysisIdParam]);
 
@@ -156,18 +162,18 @@ export default function Dashboard() {
             </button>
           </form>
 
-          {/* Quick Demos */}
+          {/* Quick Suggestions */}
           <div className="mt-4 flex flex-wrap gap-2 items-center text-xs font-bold text-slate-500">
-            <span className="uppercase tracking-wide text-[10px]">Pre-seeded Demos:</span>
+            <span className="uppercase tracking-wide text-[10px]">Quick Suggestions:</span>
             {[
-              { id: 1, name: 'facebook/react', url: 'https://github.com/facebook/react' },
-              { id: 2, name: 'tensorflow/tensorflow', url: 'https://github.com/tensorflow/tensorflow' },
-              { id: 3, name: 'naresh/mlops-platform', url: 'https://github.com/naresh/mlops-platform' }
+              { name: 'facebook/react', url: 'https://github.com/facebook/react' },
+              { name: 'psf/requests', url: 'https://github.com/psf/requests' },
+              { name: 'fastapi/fastapi', url: 'https://github.com/fastapi/fastapi' }
             ].map(repo => (
               <button
-                key={repo.id}
+                key={repo.name}
                 type="button"
-                onClick={() => { setRepoUrl(repo.url); loadAnalysis(null, repo.id); }}
+                onClick={() => { setRepoUrl(repo.url); loadAnalysis(repo.url); }}
                 className="px-3 py-1.5 bg-yellow-200 border-2 border-black hover:translate-y-[-2px] shadow-[2px_2px_0_0_rgba(0,0,0,1)] hover:shadow-[3px_3px_0_0_rgba(0,0,0,1)] font-mono text-[10px] uppercase font-black tracking-wide text-black transition-all"
               >
                 {repo.name}
@@ -204,6 +210,19 @@ export default function Dashboard() {
           <div className="border-3 border-black bg-rose-200 text-black font-extrabold text-sm px-5 py-4 shadow-[4px_4px_0_0_rgba(0,0,0,1)] flex items-center gap-3">
             <AlertTriangle size={18} className="stroke-[3px]" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {/* Empty State when no repository is analyzed yet */}
+        {!data && !loading && !error && (
+          <div className="card text-center py-16 px-6 bg-white border-3 border-dashed border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] max-w-2xl mx-auto space-y-4">
+            <div className="w-14 h-14 border-3 border-black bg-yellow-300 flex items-center justify-center mx-auto shadow-[3px_3px_0_0_rgba(0,0,0,1)]">
+              <Search size={28} className="text-black" />
+            </div>
+            <h3 className="heading-syne text-xl font-black uppercase text-black">Ready to Analyze Repository</h3>
+            <p className="text-xs font-bold text-slate-600 leading-relaxed max-w-lg mx-auto">
+              Enter any valid public GitHub repository URL above (e.g. <span className="font-mono text-black font-extrabold">https://github.com/facebook/react</span> or <span className="font-mono text-black font-extrabold">https://github.com/psf/requests</span>) to fetch real commits, contributors, PR velocity, calculate explainable activity scores, and generate MLOps predictions.
+            </p>
           </div>
         )}
 
@@ -370,7 +389,12 @@ export default function Dashboard() {
 
             {/* Team Leaderboard */}
             <div className="card">
-              <h3 className="heading-syne text-md font-black text-black uppercase mb-5">Employee Leaderboard</h3>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                <h3 className="heading-syne text-md font-black text-black uppercase">Contributor Engineering Activity</h3>
+                <span className="text-[10px] font-bold text-slate-600 bg-yellow-100 border-2 border-black px-2.5 py-1 shadow-[2px_2px_0_0_rgba(0,0,0,1)]">
+                  ℹ️ Activity Notice: Measures observable repository actions, not complete employee capability.
+                </span>
+              </div>
               <div className="overflow-x-auto border-3 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)]">
                 <table className="w-full text-left border-collapse">
                   <thead>

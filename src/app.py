@@ -117,10 +117,23 @@ def on_startup():
     except Exception as e:
         print(f"Error initializing database: {e}")
 
-# Enable CORS for frontend development
+# Enable CORS for development and production
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if cors_origins_env:
+    origins = [orig.strip() for orig in cors_origins_env.split(",") if orig.strip()]
+else:
+    origins = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -136,7 +149,16 @@ def get_db():
 
 # Dependency to get current user role
 def get_user_role(authorization: str = Header(None)) -> str:
-    return "Admin" # Open to all, bypass authorization checks
+    if not authorization:
+        # Default unauthenticated interaction to Team Leader so dashboard / repo analysis is accessible
+        return "Team Leader"
+    token = authorization
+    if token.startswith("Bearer "):
+        token = token[7:].strip()
+    payload = decode_jwt(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token.")
+    return payload.get("role", "Viewer")
 
 # Input Models
 class RegisterInput(BaseModel):
@@ -252,36 +274,23 @@ def analyze_repo(data: RepoInput, x_github_token: str = Header(None), role: str 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
         
-    # Check if we already have this repository and an analysis for it in our DB
-    # to bypass connection issues, timeouts, and save API limits.
-    repo_record = db.query(Repository).filter(
-        (Repository.owner == owner) & (Repository.name == repo_name)
-    ).first()
-    if repo_record:
-        latest_analysis = db.query(RepositoryAnalysis).filter(
-            RepositoryAnalysis.repo_id == repo_record.id
-        ).order_by(RepositoryAnalysis.analyzed_at.desc()).first()
-        if latest_analysis:
-            print(f"Bypassing live GitHub API and using cached database analysis for {owner}/{repo_name}")
-            return format_analysis_response(latest_analysis, db)
-        
     try:
-        # 1. Fetch statistics
+        # 1. Fetch real statistics from GitHub REST API
         metrics = get_repo_metrics(owner, repo_name, token)
         contributors = get_contributors(owner, repo_name, token)
         health_data = get_repository_health(owner, repo_name, metrics, contributors, token)
         recs = generate_recommendations(contributors, health_data)
     except Exception as api_err:
-        # Fallback to existing analysis in the DB if available
+        # Fallback to existing analysis in the DB only if live API fails
         repo_record = db.query(Repository).filter(
-            (Repository.owner == owner) & (Repository.name == repo_name)
+            (Repository.owner == owner) & ((Repository.name == f"{owner}/{repo_name}") | (Repository.name == repo_name))
         ).first()
         if repo_record:
             latest_analysis = db.query(RepositoryAnalysis).filter(
                 RepositoryAnalysis.repo_id == repo_record.id
             ).order_by(RepositoryAnalysis.analyzed_at.desc()).first()
             if latest_analysis:
-                print(f"Connection issue or rate limit: using cached database fallback for {owner}/{repo_name}")
+                print(f"GitHub API error ({api_err}); falling back to existing cached analysis for {owner}/{repo_name}")
                 return format_analysis_response(latest_analysis, db)
         raise HTTPException(status_code=400, detail=f"Analysis failed: {str(api_err)}")
 
@@ -473,6 +482,7 @@ def analyze_repo(data: RepoInput, x_github_token: str = Header(None), role: str 
             "id": analysis.id,
             "repo_url": data.repo_url,
             "name": repo_record.name,
+            "owner": repo_record.owner or owner,
             "stars": repo_record.stars,
             "forks": repo_record.forks,
             "branches_count": repo_record.branches_count,
@@ -510,8 +520,10 @@ def team_ranking(data: RepoInput, db: Session = Depends(get_db)):
     ranking = []
     for ca in latest_analysis.contributor_analyses:
         pred = db.query(Prediction).filter(Prediction.contributor_analysis_id == ca.id).first()
+        uname = ca.contributor.username if ca.contributor else "Unknown"
         ranking.append({
-            "employee": ca.contributor.username,
+            "employee": uname,
+            "username": uname,
             "commits": ca.commits,
             "prs": ca.merged_prs,
             "issues_closed": ca.issues_closed,
@@ -575,41 +587,76 @@ def risk_analysis(data: RepoInput, db: Session = Depends(get_db)):
 
 @app.get("/history")
 def history(db: Session = Depends(get_db)):
-    rows = db.query(RepositoryAnalysis).order_by(RepositoryAnalysis.id.desc()).all()
+    rows = db.query(RepositoryAnalysis).order_by(RepositoryAnalysis.analyzed_at.desc(), RepositoryAnalysis.id.desc()).all()
     result = []
     for row in rows:
+        repo_pred = db.query(Prediction).filter(
+            Prediction.repo_analysis_id == row.id,
+            Prediction.prediction_type == "repository_future"
+        ).first()
+        trend = repo_pred.performance_trend if repo_pred else ("Improving" if row.health_score >= 75 else ("Stable" if row.health_score >= 50 else "Declining"))
+        
+        repo_name = row.repo.name if row.repo else "Unknown"
+        owner_name = row.repo.owner if row.repo and row.repo.owner else (repo_name.split('/')[0] if '/' in repo_name else "Unknown")
+        cnt = len(row.contributor_analyses) if row.contributor_analyses else 0
+
         result.append({
             "id": row.id,
             "repo_url": row.repo.repo_url if row.repo else "",
-            "name": row.repo.name if row.repo else "",
+            "name": repo_name,
+            "repository": repo_name,
+            "owner": owner_name,
             "stars": row.repo.stars if row.repo else 0,
             "forks": row.repo.forks if row.repo else 0,
-            "contributors_count": db.query(ContributorAnalysis).filter(ContributorAnalysis.repo_analysis_id == row.id).count(),
-            "recent_commits": int(row.commit_activity * 0.5), # Estimates commits count
-            "health_score": row.health_score,
-            "status": row.health_status,
-            "analyzed_at": row.analyzed_at.isoformat()
+            "contributors_count": cnt,
+            "contributor_count": cnt,
+            "recent_commits": row.recent_commits or 0,
+            "health_score": row.health_score or 0.0,
+            "status": row.health_status or "Healthy",
+            "repository_status": row.health_status or "Healthy",
+            "prediction_trend": trend,
+            "performance_trend": trend,
+            "trend": trend,
+            "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else "",
+            "timestamp": row.analyzed_at.isoformat() if row.analyzed_at else ""
         })
     return result
 
 @app.get("/recent")
 def recent(db: Session = Depends(get_db)):
-    # Returns latest Predictions logs
-    preds = db.query(Prediction).order_by(Prediction.id.desc()).limit(10).all()
+    # Returns latest repository analyses snapshots (newest first)
+    rows = db.query(RepositoryAnalysis).order_by(RepositoryAnalysis.analyzed_at.desc(), RepositoryAnalysis.id.desc()).limit(20).all()
     result = []
-    for p in preds:
-        name = "Repository"
-        if p.contributor_analysis:
-            name = p.contributor_analysis.contributor.username
-            
+    for row in rows:
+        repo_pred = db.query(Prediction).filter(
+            Prediction.repo_analysis_id == row.id,
+            Prediction.prediction_type == "repository_future"
+        ).first()
+        trend = repo_pred.performance_trend if repo_pred else ("Improving" if row.health_score >= 75 else ("Stable" if row.health_score >= 50 else "Declining"))
+        
+        repo_name = row.repo.name if row.repo else "Unknown"
+        owner_name = row.repo.owner if row.repo and row.repo.owner else (repo_name.split('/')[0] if '/' in repo_name else "Unknown")
+        cnt = len(row.contributor_analyses) if row.contributor_analyses else 0
+
         result.append({
-            "id": p.id,
-            "target": name,
-            "type": p.prediction_type,
-            "future_score": p.future_contribution_score or p.future_repository_health,
-            "trend": p.performance_trend,
-            "risk": p.contributor_risk,
-            "predicted_at": p.predicted_at.isoformat()
+            "id": row.id,
+            "repo_url": row.repo.repo_url if row.repo else "",
+            "name": repo_name,
+            "repository": repo_name,
+            "owner": owner_name,
+            "stars": row.repo.stars if row.repo else 0,
+            "forks": row.repo.forks if row.repo else 0,
+            "contributors_count": cnt,
+            "contributor_count": cnt,
+            "recent_commits": row.recent_commits or 0,
+            "health_score": row.health_score or 0.0,
+            "status": row.health_status or "Healthy",
+            "repository_status": row.health_status or "Healthy",
+            "prediction_trend": trend,
+            "performance_trend": trend,
+            "trend": trend,
+            "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else "",
+            "analysis_date": row.analyzed_at.isoformat() if row.analyzed_at else ""
         })
     return result
 
@@ -723,8 +770,9 @@ def format_analysis_response(row, db: Session):
     profiles = []
     for ca in row.contributor_analyses:
         pred = db.query(Prediction).filter(Prediction.contributor_analysis_id == ca.id).first()
+        uname = ca.contributor.username if ca.contributor else "Unknown"
         profiles.append({
-            "username": ca.contributor.username,
+            "username": uname,
             "commits": ca.commits,
             "pull_requests": ca.merged_prs,
             "issues_closed": ca.issues_closed,
@@ -754,10 +802,21 @@ def format_analysis_response(row, db: Session):
     repo_pred = db.query(Prediction).filter(Prediction.repo_analysis_id == row.id, Prediction.prediction_type == "repository_future").first()
     f_health = repo_pred.future_repository_health if repo_pred else row.health_score
     
+    repo_name = row.repo.name if row.repo else ""
+    owner_name = row.repo.owner if row.repo and row.repo.owner else (repo_name.split('/')[0] if '/' in repo_name else "Unknown")
+    
+    parsed_langs = {}
+    if row.repo and row.repo.languages:
+        try:
+            parsed_langs = json.loads(row.repo.languages)
+        except Exception:
+            parsed_langs = {}
+
     return {
         "id": row.id,
         "repo_url": row.repo.repo_url if row.repo else "",
-        "name": row.repo.name if row.repo else "",
+        "name": repo_name,
+        "owner": owner_name,
         "stars": row.repo.stars if row.repo else 0,
         "forks": row.repo.forks if row.repo else 0,
         "branches_count": row.repo.branches_count if row.repo else 1,
@@ -768,8 +827,8 @@ def format_analysis_response(row, db: Session):
         "recent_commits": row.recent_commits,
         "pull_requests": row.pull_requests,
         "default_branch": row.repo.default_branch if row.repo else "main",
-        "languages": json.loads(row.repo.languages) if row.repo and row.repo.languages else {},
-        "analyzed_at": row.analyzed_at.isoformat(),
+        "languages": parsed_langs,
+        "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else "",
         "contributors": profiles,
         "health": health_data,
         "future_health": f_health,
@@ -848,7 +907,7 @@ def retrain_endpoint(role: str = Depends(get_user_role), db: Session = Depends(g
 # SPA fallback to index.html for client-side routing
 @app.get("/{catchall:path}")
 def spa_fallback(catchall: str):
-    if catchall.startswith(("docs", "redoc", "openapi.json", "auth", "analyze-repo", "team-ranking", "repository-health", "recommendations", "top-performer", "risk-analysis", "history", "recent", "stats", "contributors", "repositories", "analysis", "drift-detection", "drift-report", "retrain")):
+    if catchall.startswith(("docs", "redoc", "openapi.json", "auth", "predict", "analyze-repo", "team-ranking", "repository-health", "recommendations", "top-performer", "risk-analysis", "history", "recent", "stats", "contributors", "repositories", "analysis", "drift-detection", "drift-report", "retrain")):
         raise HTTPException(status_code=404, detail="Not Found")
     
     frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
